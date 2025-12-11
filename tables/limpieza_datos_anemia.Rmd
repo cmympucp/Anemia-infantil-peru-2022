@@ -1,0 +1,573 @@
+---
+title: "Limpieza de Datos - Anemia Infantil en el Perú"
+subtitle: "ENDES 2022"
+author: "Gestión Pública - PUCP"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    theme: flatly
+    highlight: tango
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.align = "center"
+)
+```
+
+# Introducción
+
+Este documento presenta el proceso de limpieza y preparación de datos para el análisis de **anemia infantil en el Perú**, utilizando información de la Encuesta Demográfica y de Salud Familiar (**ENDES 2022**) del Instituto Nacional de Estadística e Informática (INEI).
+
+## Objetivo
+
+Construir una base de datos integrada que permita analizar los determinantes de la anemia en niños menores de 5 años, combinando información de:
+
+- Características del niño (sexo, edad, peso al nacer, nivel de anemia)
+- Características de la madre (edad, educación, lengua materna, anemia materna)
+- Características del hogar (índice de riqueza, área de residencia, región)
+
+## Fuentes de datos
+
+Se utilizan 5 módulos de la ENDES 2022:
+
+| Archivo | Módulo | Variables principales |
+|---------|--------|----------------------|
+| REC0111.dta | Datos básicos MEF | Edad madre, educación, riqueza, región |
+| REC21.dta | Historia de nacimiento | Sexo del niño |
+| REC41.dta | Embarazo y parto | Peso al nacer |
+| REC42.dta | Inmunización y salud | Anemia de la madre |
+| REC44.dta | Peso y talla | Anemia del niño, edad en meses |
+
+---
+
+# Configuración del entorno
+
+## Instalación de paquetes
+
+Primero verificamos e instalamos los paquetes necesarios si no están disponibles.
+
+```{r instalacion-paquetes}
+paquetes <- c("haven", "dplyr", "tidyr", "stringr", "knitr", "kableExtra")
+
+nuevos_paquetes <- paquetes[!(paquetes %in% installed.packages()[,"Package"])]
+if(length(nuevos_paquetes)) {
+  install.packages(nuevos_paquetes)
+}
+```
+
+## Carga de librerías
+
+```{r carga-librerias}
+library(haven)      # Lectura de archivos .dta (Stata)
+library(dplyr)      # Manipulación de datos
+library(tidyr)      # Transformación de datos
+library(stringr)    # Manipulación de texto
+library(knitr)      # Tablas
+library(kableExtra) # Formato de tablas
+```
+
+## Directorio de trabajo
+
+```{r directorio, eval=FALSE}
+# IMPORTANTE: Modificar esta ruta según la ubicación de tus archivos
+setwd("F:/ANEMIA DR CRISTOBAL")
+```
+
+---
+
+# Procesamiento de módulos
+
+## Módulo REC0111: Datos de la Madre
+
+Este módulo contiene información socioeconómica y demográfica de las mujeres en edad fértil (MEF).
+
+### Lectura de datos
+
+```{r lectura-rec0111}
+rec0111 <- read_dta("REC0111.dta")
+cat("Registros leídos:", nrow(rec0111))
+```
+
+### Creación de identificadores
+
+El identificador `CASEID` se divide en dos componentes:
+
+- **HHID**: Identificador del hogar (9 primeros caracteres)
+- **HVIDX**: Índice de la persona dentro del hogar (3 últimos caracteres)
+
+```{r identificadores-madre}
+datos_madre <- rec0111 %>%
+  mutate(
+    HHID = str_trim(str_sub(CASEID, 1, 9)),
+    HVIDX = as.numeric(str_trim(str_sub(CASEID, 10, 12)))
+  )
+```
+
+### Selección de variables
+
+```{r seleccion-vars-madre}
+datos_madre <- datos_madre %>%
+  select(
+    HHID, HVIDX,
+    conglome = V001,
+    hogar = V002,
+    V005,
+    edadmadre = V012,
+    V015,
+    V106,           # Educación
+    V131,           # Lengua materna
+    V133,           # Años de escolaridad
+    wealth_index = V190,
+    riqueza = V191,
+    region = V024,
+    V025,           # Área urbano/rural
+    altitud = V040,
+    estrato = V022
+  )
+```
+
+### Recodificación de variables
+
+#### Años de escolaridad
+
+```{r recode-escolaridad}
+# Código 97 = No sabe/No responde → NA
+datos_madre <- datos_madre %>%
+  mutate(
+    sch_madre = if_else(V133 == 97, NA_real_, as.numeric(V133))
+  )
+```
+
+#### Área de residencia
+
+```{r recode-area}
+# 1 = Urbano, 2 = Rural
+datos_madre <- datos_madre %>%
+  mutate(
+    area = case_when(
+      V025 == 1 ~ "Urbano",
+      V025 == 2 ~ "Rural",
+      TRUE ~ NA_character_
+    )
+  )
+```
+
+#### Lengua materna
+
+```{r recode-lengua}
+# 1-9 = Lenguas indígenas, 10 = Castellano, 11-12 = Lenguas extranjeras
+datos_madre <- datos_madre %>%
+  mutate(
+    lengmaterna = case_when(
+      V131 >= 1 & V131 <= 9 ~ "Lengua Indígena",
+      V131 == 10 ~ "Castellano",
+      V131 %in% c(11, 12) ~ "Lengua extranjera",
+      TRUE ~ NA_character_
+    )
+  )
+```
+
+#### Nivel educativo
+
+```{r recode-educacion}
+# 0-1 = Primaria o menos, 2 = Secundaria, 3 = Superior
+datos_madre <- datos_madre %>%
+  mutate(
+    educmadre = case_when(
+      V106 %in% c(0, 1) ~ "Primaria  o menos",
+      V106 == 2 ~ "Secundaria",
+      V106 == 3 ~ "Superior",
+      TRUE ~ NA_character_
+    )
+  )
+```
+
+#### Factor de ponderación
+
+```{r recode-peso}
+# Reescalar el factor de ponderación
+datos_madre <- datos_madre %>%
+  mutate(
+    peso = V005 / 1000000
+  )
+```
+
+### Limpieza final del módulo
+
+```{r limpieza-madre}
+datos_madre <- datos_madre %>%
+  select(-V106, -V131, -V133, -V025) %>%
+  arrange(HHID, HVIDX)
+
+cat("Registros en datos_madre:", nrow(datos_madre))
+```
+
+---
+
+## Módulo REC21: Sexo del Niño
+
+Este módulo proviene de la historia de nacimientos y contiene información básica sobre los hijos.
+
+### Lectura y procesamiento
+
+```{r procesamiento-rec21}
+rec21 <- read_dta("REC21.dta")
+cat("Registros leídos:", nrow(rec21))
+```
+
+### Creación de base de sexo
+
+```{r base-sexo}
+sexo_nino <- rec21 %>%
+  mutate(
+    HHID = str_trim(str_sub(CASEID, 1, 9)),
+    HVIDX = as.numeric(str_trim(str_sub(CASEID, 10, 12)))
+  ) %>%
+  # Recodificar sexo: 1 = Hombre, 2 = Mujer
+  mutate(
+    sexo = case_when(
+      B4 == 1 ~ "Hombre",
+      B4 == 2 ~ "Mujer",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  # BIDX es el índice del nacimiento, se renombra a HWIDX
+  rename(HWIDX = BIDX) %>%
+  select(HHID, HVIDX, BORD, HWIDX, sexo, B5)
+
+cat("Registros en sexo_nino:", nrow(sexo_nino))
+```
+
+---
+
+## Módulo REC41: Peso al Nacer
+
+Este módulo contiene información sobre el embarazo, parto y puerperio.
+
+### Lectura y procesamiento
+
+```{r procesamiento-rec41}
+rec41 <- read_dta("REC41.dta")
+cat("Registros leídos:", nrow(rec41))
+```
+
+### Creación de base de peso al nacer
+
+```{r base-peso-nacer}
+peso_nacer <- rec41 %>%
+  mutate(
+    HHID = str_trim(str_sub(CASEID, 1, 9)),
+    HVIDX = as.numeric(str_trim(str_sub(CASEID, 10, 12)))
+  ) %>%
+  rename(HWIDX = MIDX) %>%
+  # M19: Peso al nacer en gramos
+  # 9996 = No fue pesado, 9998 = No sabe
+  mutate(
+    pesoalnacer = case_when(
+      M19 %in% c(9996, 9998) ~ NA_real_,
+      TRUE ~ as.numeric(M19) / 1000  # Convertir a kilogramos
+    )
+  ) %>%
+  select(HHID, HVIDX, HWIDX, pesoalnacer)
+
+cat("Registros en peso_nacer:", nrow(peso_nacer))
+```
+
+---
+ 
+## Módulo REC42: Anemia de la Madre
+
+Este módulo contiene información sobre inmunización y salud, incluyendo el nivel de hemoglobina de la madre.
+
+### Lectura y procesamiento
+
+```{r procesamiento-rec42}
+rec42 <- read_dta("REC42.dta")
+cat("Registros leídos:", nrow(rec42))
+```
+
+### Creación de base de anemia materna
+
+```{r base-anemia-madre}
+anemia_madre <- rec42 %>%
+  mutate(
+    HHID = str_trim(str_sub(CASEID, 1, 9)),
+    HVIDX = as.numeric(str_trim(str_sub(CASEID, 10, 12)))
+  ) %>%
+  # V457: Nivel de anemia de la madre
+  # 1-3 = Tiene anemia (severa, moderada, leve), 4 = No tiene, 9 = Missing
+  mutate(
+    anemiamadre = case_when(
+      V457 >= 1 & V457 <= 3 ~ "Madre Tiene anemia",
+      V457 == 4 ~ "Madre No tiene anemia",
+      V457 == 9 ~ NA_character_,
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  select(HHID, HVIDX, anemiamadre) %>%
+  distinct(HHID, HVIDX, .keep_all = TRUE)
+
+cat("Registros en anemia_madre:", nrow(anemia_madre))
+```
+
+---
+
+## Módulo REC44: Anemia del Niño
+
+Este módulo contiene las mediciones antropométricas y de hemoglobina de los niños.
+
+### Lectura y procesamiento
+
+```{r procesamiento-rec44}
+rec44 <- read_dta("REC44.dta")
+cat("Registros leídos:", nrow(rec44))
+```
+
+### Creación de base de anemia del niño
+
+```{r base-anemia-nino}
+anemia_nino <- rec44 %>%
+  mutate(
+    HHID = str_trim(str_sub(CASEID, 1, 9)),
+    HVIDX = as.numeric(str_trim(str_sub(CASEID, 10, 12)))
+  ) %>%
+  rename(edadmeses = HW1) %>%
+  # Crear grupos de edad
+  mutate(
+    edadniño012 = if_else(edadmeses >= 0 & edadmeses <= 12, 1, 0),
+    edadniño1335 = if_else(edadmeses >= 13 & edadmeses <= 35, 1, 0),
+    edadniño3659 = if_else(edadmeses >= 36 & edadmeses <= 59, 1, 0)
+  ) %>%
+  # HW57: Nivel de anemia del niño
+  # 1 = Severa, 2 = Moderada, 3 = Leve, 4 = No tiene, 9 = Missing
+  mutate(
+    d_anemia = case_when(
+      HW57 >= 1 & HW57 <= 3 ~ "Tiene Anemia",
+      HW57 == 4 ~ "No tiene anemia",
+      HW57 == 9 ~ NA_character_,
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  mutate(
+    anemia = case_when(
+      HW57 == 4 ~ "Sin Anemia",
+      HW57 == 3 ~ "Leve",
+      HW57 == 2 ~ "Moderado",
+      HW57 == 1 ~ "Grave",
+      HW57 == 9 ~ NA_character_,
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  select(HHID, HVIDX, HWIDX, edadmeses, edadniño012, edadniño1335, 
+         edadniño3659, d_anemia, anemia, HW13, HW55)
+
+cat("Registros en anemia_nino:", nrow(anemia_nino))
+```
+
+---
+
+# Integración de bases de datos
+
+## Unión de bases de niños
+
+Se integran los tres módulos relacionados con los niños: sexo, peso al nacer y anemia.
+
+```{r union-ninos}
+base_ninos <- sexo_nino %>%
+  left_join(peso_nacer, by = c("HHID", "HVIDX", "HWIDX")) %>%
+  left_join(anemia_nino, by = c("HHID", "HVIDX", "HWIDX")) %>%
+  arrange(HHID, HVIDX, HWIDX)
+
+cat("Registros en base_ninos:", nrow(base_ninos))
+```
+
+## Unión de bases de madres
+
+Se integran los datos de la madre con su información de anemia, filtrando solo las encuestas completas.
+
+```{r union-madres}
+base_madre <- datos_madre %>%
+  left_join(anemia_madre, by = c("HHID", "HVIDX")) %>%
+  # V015 == 1 indica encuesta completa
+  filter(V015 == 1) %>%
+  select(-V015)
+
+cat("Registros en base_madre:", nrow(base_madre))
+```
+
+## Unión final: Niños con Madres
+
+```{r union-final}
+base_anemia <- base_ninos %>%
+  inner_join(base_madre, by = c("HHID", "HVIDX"))
+
+cat("Registros después de unir niños con madres:", nrow(base_anemia))
+```
+
+---
+
+# Aplicación de filtros
+
+Se aplican los criterios de inclusión definidos en la metodología ENDES:
+
+## Filtro 1: Niños vivos
+
+```{r filtro-vivos}
+n_inicial <- nrow(base_anemia)
+
+# B5: Estado de supervivencia (0 = fallecido, 1 = vivo)
+base_anemia <- base_anemia %>%
+  filter(B5 != 0)
+
+cat("Eliminados por fallecimiento:", n_inicial - nrow(base_anemia))
+cat("\nRegistros restantes:", nrow(base_anemia))
+```
+
+## Filtro 2: Niños efectivamente medidos
+
+```{r filtro-medidos}
+n_temp <- nrow(base_anemia)
+
+# HW13: Resultado de la medición (0 = medido)
+base_anemia <- base_anemia %>%
+  filter(HW13 == 0)
+
+cat("Eliminados por no medición:", n_temp - nrow(base_anemia))
+cat("\nRegistros restantes:", nrow(base_anemia))
+```
+
+## Filtro 3: Consentimiento informado
+
+```{r filtro-consentimiento}
+n_temp <- nrow(base_anemia)
+
+# HW55: Consentimiento para prueba de anemia (0 = aceptó)
+base_anemia <- base_anemia %>%
+  filter(HW55 == 0)
+
+cat("Eliminados por falta de consentimiento:", n_temp - nrow(base_anemia))
+cat("\nRegistros restantes:", nrow(base_anemia))
+```
+
+## Limpieza de variables auxiliares
+
+```{r limpieza-auxiliares}
+base_anemia <- base_anemia %>%
+  select(-B5, -HW13, -HW55) %>%
+  arrange(HHID, HVIDX, HWIDX)
+```
+
+---
+
+# Base de datos final
+
+## Ordenamiento de variables
+
+```{r ordenamiento-final}
+base_anemia <- base_anemia %>%
+  select(
+    HHID, HVIDX, HWIDX, BORD, sexo, pesoalnacer, edadmeses,
+    edadniño012, edadniño1335, edadniño3659, d_anemia, anemia,
+    conglome, hogar, edadmadre, sch_madre, educmadre, lengmaterna,
+    wealth_index, riqueza, region, area, altitud, estrato, V005, peso,
+    anemiamadre
+  )
+```
+
+## Exportación
+
+```{r exportacion}
+write.csv(base_anemia, "BASE_ANEMIA_F.csv", row.names = FALSE)
+cat("Archivo exportado: BASE_ANEMIA_F.csv")
+```
+
+---
+
+# Resumen de resultados
+
+## Dimensiones de la base final
+
+```{r resumen-dimensiones}
+cat("Total de registros:", nrow(base_anemia), "\n")
+cat("Total de variables:", ncol(base_anemia))
+```
+
+## Diccionario de variables
+
+```{r diccionario, echo=FALSE}
+diccionario <- data.frame(
+  Variable = c("HHID", "HVIDX", "HWIDX", "BORD", "sexo", "pesoalnacer", 
+               "edadmeses", "edadniño012", "edadniño1335", "edadniño3659",
+               "d_anemia", "anemia", "conglome", "hogar", "edadmadre",
+               "sch_madre", "educmadre", "lengmaterna", "wealth_index",
+               "riqueza", "region", "area", "altitud", "estrato", "V005",
+               "peso", "anemiamadre"),
+  Descripcion = c("ID del hogar", "Índice de la madre", "Índice del niño",
+                  "Orden de nacimiento", "Sexo del niño", "Peso al nacer (kg)",
+                  "Edad en meses", "Edad 0-12 meses", "Edad 13-35 meses", 
+                  "Edad 36-59 meses", "Tiene anemia (dicotómica)", 
+                  "Nivel de anemia", "Conglomerado", "Número de hogar",
+                  "Edad de la madre", "Años de escolaridad madre",
+                  "Nivel educativo madre", "Lengua materna",
+                  "Índice de riqueza (categorías)", "Índice de riqueza (continuo)",
+                  "Región", "Área de residencia", "Altitud (msnm)",
+                  "Estrato", "Factor de ponderación original",
+                  "Factor de ponderación reescalado", "Anemia de la madre")
+)
+
+kable(diccionario, format = "html", caption = "Diccionario de Variables") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE, position = "left")
+```
+
+## Valores faltantes
+
+```{r valores-faltantes}
+na_summary <- sapply(base_anemia, function(x) sum(is.na(x)))
+na_summary <- na_summary[na_summary > 0]
+
+if(length(na_summary) > 0) {
+  na_df <- data.frame(
+    Variable = names(na_summary),
+    `Valores NA` = as.numeric(na_summary),
+    Porcentaje = round(as.numeric(na_summary) / nrow(base_anemia) * 100, 2)
+  )
+  
+  kable(na_df, format = "html", caption = "Resumen de Valores Faltantes") %>%
+    kable_styling(bootstrap_options = c("striped", "hover"),
+                  full_width = FALSE, position = "left")
+} else {
+  cat("No se encontraron valores faltantes en la base de datos.")
+}
+```
+
+## Distribución de la variable dependiente
+
+```{r dist-anemia}
+tabla_anemia <- base_anemia %>%
+  count(d_anemia) %>%
+  mutate(Porcentaje = round(n / sum(n) * 100, 1))
+
+kable(tabla_anemia, format = "html", 
+      col.names = c("Condición", "Frecuencia", "Porcentaje (%)"),
+      caption = "Distribución de Anemia Infantil") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                full_width = FALSE, position = "left")
+```
+
+---
+
+# Información de la sesión
+
+```{r session-info}
+sessionInfo()
+```
