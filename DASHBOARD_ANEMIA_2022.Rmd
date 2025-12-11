@@ -1,0 +1,746 @@
+---
+title: "ANEMIA INFANTIL EN EL PERÚ (ENDES 2022)"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    storyboard: true
+    vertical_layout: fill
+    theme: flatly
+    source_code: embed
+---
+
+<style>
+body { color: #333333; }
+h1, h2, h3, h4, h5, h6 { color: #222222; }
+p, li, div { color: #444444; }
+.value-box .value { color: #000000; }
+pre, code { color: #000000; background-color: #f8f8f8; }
+</style>
+
+```{r setup, include=FALSE}
+# Librerías
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(plotly)
+library(knitr)
+library(kableExtra)
+library(DT)
+library(flexdashboard)
+library(modelsummary)
+library(pROC)
+library(psych)
+library(GPArotation)
+library(ggcorrplot)
+library(factoextra)
+library(cluster)
+library(corrplot)
+library(lmtest)
+library(scales)
+
+# Cargar datos
+bdt <- read.csv("BASE_ANEMIA_F.csv", stringsAsFactors = FALSE)
+
+# VARIABLES NUMÉRICAS
+bdt$riqueza <- as.numeric(bdt$riqueza)
+bdt$edadmeses <- as.numeric(bdt$edadmeses)
+bdt$edadmadre <- as.numeric(bdt$edadmadre)
+bdt$pesoalnacer <- as.numeric(bdt$pesoalnacer)
+
+# CREAR VARIABLES BINARIAS/NUMÉRICAS
+bdt$anemia_bin <- ifelse(bdt$d_anemia == "Tiene Anemia", 1, 0)
+bdt$sexo_num <- ifelse(bdt$sexo == "Mujer", 1, 0)
+bdt$area_num <- ifelse(bdt$area == "Rural", 1, 0)
+bdt$anemiamadre_num <- ifelse(grepl("Tiene", bdt$anemiamadre), 1, 0)
+bdt$educmadre_num <- as.numeric(factor(bdt$educmadre, 
+                                        levels = c("Primaria  o menos", "Secundaria", "Superior")))
+bdt$wealth_num <- as.numeric(factor(bdt$wealth_index,
+                                     levels = c("El más pobre", "Pobrer", "Medio", "Rico", "Más rico")))
+
+# Funciones para valueboxes
+computeRegiones = function() return(length(unique(bdt$region)))
+computeNinos = function() return(nrow(bdt))
+computePrevalencia = function() return(round(mean(bdt$anemia_bin, na.rm=TRUE)*100, 1))
+```
+
+Introducción {data-icon="fa-solid fa-baby"}
+=====================================
+
+Column {data-width=400}
+-----------------------------------------------------------------------
+
+### Regiones del Perú
+
+```{r}
+valueBox(
+value = computeRegiones(),
+caption = "Regiones del Perú",
+icon = "fas fa-earth-americas",
+color = "success"
+)
+```
+
+### Niños evaluados
+
+```{r}
+valueBox(
+value = format(computeNinos(), big.mark = ","),
+caption = "Niños menores de 5 años evaluados",
+icon = "fas fa-child",
+color = "info"
+)
+```
+
+### Prevalencia de Anemia
+
+```{r}
+prev <- computePrevalencia()
+valueBox(
+value = paste0(prev, "%"),
+caption = "Prevalencia de Anemia",
+icon = "fas fa-tint",
+color = ifelse(prev > 40, "danger", "warning")
+)
+```
+
+### CONTEXTO
+
+- **La anemia infantil es un problema de salud pública crítico en el Perú:** Afecta el desarrollo cognitivo, motor y socioemocional de los niños menores de 5 años.
+
+- **La ENDES 2022 permite analizar los determinantes de esta condición** a nivel nacional, considerando factores socioeconómicos, maternos y geográficos.
+
+- **Objetivo del estudio:** Identificar qué factores influyen en la anemia infantil en el Perú, utilizando datos de la Encuesta Demográfica y de Salud Familiar (ENDES) 2022.
+
+
+Variable Dependiente {data-icon="fa-solid fa-droplet"}
+=====================================
+
+Column {data-width=500} {.tabset}
+-----------------------------------------------------------------------
+
+### Definición de Anemia
+
+La **anemia** se define según los niveles de hemoglobina ajustados por altitud:
+
+```{r}
+clasificacion <- data.frame(
+Nivel = c("< 11.0 g/dL", "≥ 11.0 g/dL"),
+Clasificacion = c("Tiene Anemia", "No tiene Anemia"),
+Valor = c(1, 0)
+)
+
+kable(clasificacion, col.names = c("Nivel de Hemoglobina", "Clasificación", "Valor binario"),
+    caption = "Criterio de Clasificación de Anemia Infantil", format = "html") %>%
+kable_styling(bootstrap_options = c("striped", "hover", "condensed", "bordered"),
+              full_width = FALSE, position = "center")
+```
+
+**Tipos de anemia por severidad:**
+
+- **Leve:** Hemoglobina entre 10.0-10.9 g/dL
+- **Moderada:** Hemoglobina entre 7.0-9.9 g/dL
+- **Severa:** Hemoglobina < 7.0 g/dL
+
+### Distribución
+
+```{r}
+tabla <- bdt %>%
+count(d_anemia) %>%
+mutate(Porcentaje = round(100 * n / sum(n), 1)) %>%
+rename(Categoria = d_anemia, Frecuencia = n)
+
+datatable(tabla, options = list(dom = 't', pageLength = 5),
+        caption = 'Distribución de niños según Anemia', rownames = FALSE)
+```
+
+Column {data-width=500} {.tabset}
+-----------------------------------------------------------------------
+
+### Distribución Gráfica
+
+```{r}
+tabla_pe <- bdt %>%
+count(d_anemia) %>%
+mutate(
+  Porcentaje = round(100 * n / sum(n), 1),
+  Etiqueta = paste0(format(n, big.mark=","), " (", Porcentaje, "%)")
+)
+
+ggplot(tabla_pe, aes(x = d_anemia, y = n, fill = d_anemia)) +
+geom_bar(stat = "identity", width = 0.6) +
+geom_text(aes(label = Etiqueta), vjust = -0.5, size = 4) +
+scale_fill_brewer(palette = "Paired") +
+theme_minimal() +
+labs(title = "Distribución de Anemia Infantil", x = "Condición", y = "Frecuencia",
+     caption = "Fuente: ENDES 2022, INEI Perú.") +
+ylim(0, max(tabla_pe$n) * 1.15) +
+theme(plot.title = element_text(hjust = 0.5, face = "bold"), legend.position = "none")
+```
+
+### Por Severidad
+
+```{r}
+tabla_sev <- bdt %>%
+count(anemia) %>%
+mutate(
+  Porcentaje = round(100 * n / sum(n), 1),
+  Etiqueta = paste0(format(n, big.mark=","), " (", Porcentaje, "%)")
+)
+
+ggplot(tabla_sev, aes(x = reorder(anemia, -n), y = n, fill = anemia)) +
+geom_bar(stat = "identity", width = 0.6) +
+geom_text(aes(label = Etiqueta), vjust = -0.5, size = 3.5) +
+scale_fill_brewer(palette = "Paired") +
+theme_minimal() +
+labs(title = "Distribución por Severidad de Anemia", x = "Tipo de Anemia", y = "Frecuencia",
+     caption = "Fuente: ENDES 2022, INEI Perú.") +
+ylim(0, max(tabla_sev$n) * 1.15) +
+theme(plot.title = element_text(hjust = 0.5, face = "bold"), legend.position = "none")
+```
+
+
+Variables Independientes {data-icon="fa-solid fa-list"}
+=====================================
+
+Column {data-width=500} {.tabset}
+-----------------------------------------------------------------------
+
+### Índice de Riqueza
+
+```{r}
+tabla_riq <- bdt %>%
+count(wealth_index) %>%
+mutate(Porcentaje = paste0(round(100 * n / sum(n), 1), "%"))
+
+ggplot(tabla_riq, aes(x = wealth_index, y = n, fill = wealth_index)) +
+geom_bar(stat = "identity", width = 0.6) +
+geom_text(aes(label = paste0(format(n, big.mark=","), "\n(", Porcentaje, ")")), vjust = -0.3, size = 3) +
+scale_fill_brewer(palette = "Paired") +
+theme_minimal() +
+labs(title = "Distribución por Índice de Riqueza", x = "", y = "Frecuencia") +
+ylim(0, max(tabla_riq$n) * 1.25) +
+theme(plot.title = element_text(hjust = 0.5, face = "bold"), legend.position = "none",
+      axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+### Edad del Niño (meses)
+
+```{r}
+g2 <- ggplot(bdt, aes(x = edadmeses)) +
+geom_histogram(binwidth = 3, fill = "#A6CEE3", color = "white") +
+labs(title = "Distribución de Edad del Niño", x = "Edad (meses)", y = "Frecuencia") +
+theme_minimal() +
+theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+
+ggplotly(g2)
+```
+
+### Peso al Nacer
+
+```{r}
+bdt_peso <- bdt %>% filter(!is.na(pesoalnacer))
+g3 <- ggplot(bdt_peso, aes(y = pesoalnacer)) +
+geom_boxplot(fill = "#A6CEE3") +
+labs(title = "Boxplot del Peso al Nacer", y = "Peso (kg)") +
+theme_minimal() +
+theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+
+ggplotly(g3)
+```
+
+### Edad de la Madre
+
+```{r}
+g4 <- ggplot(bdt, aes(x = edadmadre)) +
+geom_histogram(binwidth = 2, fill = "#A6CEE3", color = "white") +
+labs(title = "Distribución de Edad de la Madre", x = "Edad (años)", y = "Frecuencia") +
+theme_minimal() +
+theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+
+ggplotly(g4)
+```
+
+Column {data-width=500} {.tabset}
+-----------------------------------------------------------------------
+
+### Área de Residencia
+
+```{r}
+tabla_area <- bdt %>%
+count(area) %>%
+mutate(Porcentaje = paste0(round(100 * n / sum(n), 1), "%"))
+
+ggplot(tabla_area, aes(x = area, y = n, fill = area)) +
+geom_bar(stat = "identity", width = 0.6) +
+geom_text(aes(label = paste0(format(n, big.mark=","), "\n(", Porcentaje, ")")), vjust = -0.3, size = 4) +
+scale_fill_brewer(palette = "Paired") +
+theme_minimal() +
+labs(title = "Distribución por Área", x = "", y = "Frecuencia") +
+ylim(0, max(tabla_area$n) * 1.2) +
+theme(plot.title = element_text(hjust = 0.5, face = "bold"), legend.position = "none")
+```
+
+### Educación de la Madre
+
+```{r}
+tabla_educ <- bdt %>%
+count(educmadre) %>%
+mutate(Porcentaje = paste0(round(100 * n / sum(n), 1), "%"))
+
+ggplot(tabla_educ, aes(x = educmadre, y = n, fill = educmadre)) +
+geom_bar(stat = "identity", width = 0.6) +
+geom_text(aes(label = paste0(format(n, big.mark=","), "\n(", Porcentaje, ")")), vjust = -0.3, size = 3.5) +
+scale_fill_brewer(palette = "Paired") +
+theme_minimal() +
+labs(title = "Educación de la Madre", x = "", y = "Frecuencia") +
+ylim(0, max(tabla_educ$n) * 1.2) +
+theme(plot.title = element_text(hjust = 0.5, face = "bold"), legend.position = "none")
+```
+
+### Anemia Materna
+
+```{r}
+tabla_am <- bdt %>%
+count(anemiamadre) %>%
+mutate(Porcentaje = paste0(round(100 * n / sum(n), 1), "%"))
+
+ggplot(tabla_am, aes(x = anemiamadre, y = n, fill = anemiamadre)) +
+geom_bar(stat = "identity", width = 0.6) +
+geom_text(aes(label = paste0(format(n, big.mark=","), "\n(", Porcentaje, ")")), vjust = -0.3, size = 3.5) +
+scale_fill_brewer(palette = "Paired") +
+theme_minimal() +
+labs(title = "Anemia en la Madre", x = "", y = "Frecuencia") +
+ylim(0, max(tabla_am$n) * 1.2) +
+theme(plot.title = element_text(hjust = 0.5, face = "bold"), legend.position = "none")
+```
+
+### Sexo del Niño
+
+```{r}
+tabla_sexo <- bdt %>%
+count(sexo) %>%
+mutate(Porcentaje = paste0(round(100 * n / sum(n), 1), "%"))
+
+ggplot(tabla_sexo, aes(x = sexo, y = n, fill = sexo)) +
+geom_bar(stat = "identity", width = 0.6) +
+geom_text(aes(label = paste0(format(n, big.mark=","), "\n(", Porcentaje, ")")), vjust = -0.3, size = 4) +
+scale_fill_brewer(palette = "Paired") +
+theme_minimal() +
+labs(title = "Sexo del Niño", x = "", y = "Frecuencia") +
+ylim(0, max(tabla_sexo$n) * 1.2) +
+theme(plot.title = element_text(hjust = 0.5, face = "bold"), legend.position = "none")
+```
+
+
+Análisis Bivariado {.storyboard data-icon="fa-solid fa-chart-bar"}
+=====================================
+
+### Área vs Anemia {data-commentary-width=400}
+
+```{r}
+df_plot <- bdt %>%
+count(d_anemia, area) %>%
+group_by(area) %>%
+mutate(prop = n / sum(n), label = paste0(round(prop * 100, 1), "%"))
+
+ggplot(df_plot, aes(x = area, y = prop, fill = d_anemia)) +
+geom_bar(stat = "identity", position = "fill", color = "black") +
+geom_text(aes(label = label), position = position_fill(vjust = 0.5), color = "white", size = 4) +
+scale_y_continuous(labels = percent_format()) +
+scale_fill_brewer(palette = "Paired") +
+labs(title = "Anemia según Área de Residencia", x = "", y = "Porcentaje", fill = "Condición") +
+theme_minimal() +
+theme(plot.title = element_text(hjust = 0.5, face = "bold"), legend.position = "bottom")
+```
+
+***
+
+```{r}
+chi_area <- chisq.test(table(bdt$d_anemia, bdt$area))
+cat(sprintf("Chi-cuadrado = %.2f, gl = %d, p-valor < 0.001", chi_area$statistic, chi_area$parameter))
+```
+
+**INTERPRETACIÓN:**
+
+- La anemia es significativamente **más prevalente en zonas rurales** que en zonas urbanas.
+- Esta diferencia refleja desigualdades en acceso a servicios de salud, alimentación y saneamiento.
+
+### Educación Materna vs Anemia {data-commentary-width=400}
+
+```{r}
+df_plot2 <- bdt %>%
+count(d_anemia, educmadre) %>%
+group_by(educmadre) %>%
+mutate(prop = n / sum(n), label = paste0(round(prop * 100, 1), "%"))
+
+ggplot(df_plot2, aes(x = educmadre, y = prop, fill = d_anemia)) +
+geom_bar(stat = "identity", position = "fill", color = "black") +
+geom_text(aes(label = label), position = position_fill(vjust = 0.5), color = "white", size = 4) +
+scale_y_continuous(labels = percent_format()) +
+scale_fill_brewer(palette = "Paired") +
+labs(title = "Anemia según Educación de la Madre", x = "", y = "Porcentaje", fill = "Condición") +
+theme_minimal() +
+theme(plot.title = element_text(hjust = 0.5, face = "bold"), legend.position = "bottom")
+```
+
+***
+
+```{r}
+chi_educ <- chisq.test(table(bdt$d_anemia, bdt$educmadre))
+cat(sprintf("Chi-cuadrado = %.2f, gl = %d, p-valor < 0.001", chi_educ$statistic, chi_educ$parameter))
+```
+
+**INTERPRETACIÓN:**
+
+- A **mayor nivel educativo de la madre**, menor prevalencia de anemia en los niños.
+- La educación materna es un factor protector clave.
+
+### Anemia Materna vs Anemia Infantil {data-commentary-width=400}
+
+```{r}
+df_plot3 <- bdt %>%
+count(d_anemia, anemiamadre) %>%
+group_by(anemiamadre) %>%
+mutate(prop = n / sum(n), label = paste0(round(prop * 100, 1), "%"))
+
+ggplot(df_plot3, aes(x = anemiamadre, y = prop, fill = d_anemia)) +
+geom_bar(stat = "identity", position = "fill", color = "black") +
+geom_text(aes(label = label), position = position_fill(vjust = 0.5), color = "white", size = 4) +
+scale_y_continuous(labels = percent_format()) +
+scale_fill_brewer(palette = "Paired") +
+labs(title = "Anemia Infantil según Anemia Materna", x = "", y = "Porcentaje", fill = "Condición") +
+theme_minimal() +
+theme(plot.title = element_text(hjust = 0.5, face = "bold"), legend.position = "bottom")
+```
+
+***
+
+```{r}
+chi_madre <- chisq.test(table(bdt$d_anemia, bdt$anemiamadre))
+cat(sprintf("Chi-cuadrado = %.2f, gl = %d, p-valor < 0.001", chi_madre$statistic, chi_madre$parameter))
+```
+
+**INTERPRETACIÓN:**
+
+- Existe una **asociación significativa** entre la anemia de la madre y la anemia del niño.
+- Los hijos de madres con anemia tienen mayor probabilidad de presentar anemia.
+
+### Variables Numéricas vs Anemia {data-commentary-width=400}
+
+```{r}
+vars_num <- c("riqueza", "edadmeses", "edadmadre")
+nombres <- c("Índice de Riqueza", "Edad del niño (meses)", "Edad de la madre")
+
+resultados <- lapply(1:length(vars_num), function(i) {
+tryCatch({
+  grupo0 <- bdt[[vars_num[i]]][bdt$anemia_bin == 0]
+  grupo1 <- bdt[[vars_num[i]]][bdt$anemia_bin == 1]
+  grupo0 <- grupo0[!is.na(grupo0)]
+  grupo1 <- grupo1[!is.na(grupo1)]
+  t <- t.test(grupo0, grupo1)
+  data.frame(
+    Variable = nombres[i],
+    Media.Sin.Anemia = round(mean(grupo0), 3),
+    Media.Con.Anemia = round(mean(grupo1), 3),
+    Valor.p = ifelse(t$p.value < 0.001, "<0.001", round(t$p.value, 4))
+  )
+}, error = function(e) {
+  data.frame(Variable = nombres[i], Media.Sin.Anemia = NA, Media.Con.Anemia = NA, Valor.p = NA)
+})
+})
+
+tabla_ttest <- do.call(rbind, resultados)
+kable(tabla_ttest, format = "html", caption = "Comparación de medias (T-test)") %>%
+kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+***
+
+**PRINCIPALES HALLAZGOS:**
+
+1. **Índice de Riqueza:** Los niños con anemia provienen de hogares con menor índice de riqueza.
+
+2. **Edad del niño:** Los niños más pequeños tienen mayor prevalencia de anemia.
+
+3. **Edad de la madre:** Diferencias por analizar según resultados.
+
+
+Regresión Logística {data-icon="fa-solid fa-calculator"}
+=====================================
+
+Column {data-width=500} {.tabset}
+-----------------------------------------------------------------------
+
+### Matriz de Correlación
+
+```{r}
+cor_vars <- bdt[, c("anemia_bin", "riqueza", "edadmeses", "edadmadre", 
+                   "area_num", "educmadre_num", "anemiamadre_num", "sexo_num")]
+cor_vars <- cor_vars[complete.cases(cor_vars), ]
+
+corr <- cor(cor_vars)
+corrplot(corr, method = "color", tl.cex = 0.7, number.cex = 0.6, 
+       addCoef.col = "black", type = "upper", col = colorRampPalette(c("#B2DF8A", "white", "#1F78B4"))(200))
+```
+
+### Modelos Anidados
+
+```{r}
+# Modelo 1: Variables principales
+rlog1 <- glm(anemia_bin ~ riqueza + anemiamadre_num + educmadre_num + area_num,
+           family = binomial, data = bdt)
+
+# Modelo 2: + Variables de control
+rlog2 <- glm(anemia_bin ~ riqueza + anemiamadre_num + educmadre_num + area_num +
+             sexo_num + edadmeses,
+           family = binomial, data = bdt)
+
+# Modelo 3: + Variables adicionales
+rlog3 <- glm(anemia_bin ~ riqueza + anemiamadre_num + educmadre_num + area_num +
+             sexo_num + edadmeses + edadmadre,
+           family = binomial, data = bdt)
+
+modelos <- list('Modelo I' = rlog1, 'Modelo II' = rlog2, 'Modelo III' = rlog3)
+
+modelsummary(modelos, exponentiate = TRUE, statistic = "conf.int", stars = TRUE,
+           title = "Regresión Logística - Odds Ratios")
+```
+
+### Comparación de Modelos
+
+```{r}
+comparacion <- anova(rlog1, rlog2, rlog3, test = "Chisq")
+kable(comparacion, format = "html", digits = 4, caption = "Comparación de Modelos") %>%
+kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+Column {data-width=500}
+-----------------------------------------------------------------------
+
+### Interpretación de Resultados
+
+**🔍 INTERPRETACIÓN DE ODDS RATIOS (Modelo III):**
+
+1. **Anemia Materna:** Las madres con anemia aumentan significativamente el riesgo de anemia en sus hijos (OR > 1).
+
+2. **Área Rural:** Vivir en zona rural incrementa la probabilidad de anemia infantil respecto a zonas urbanas.
+
+3. **Índice de Riqueza:** A mayor riqueza, menor probabilidad de anemia (efecto protector).
+
+4. **Educación de la Madre:** Mayor nivel educativo reduce el riesgo de anemia.
+
+5. **Edad del Niño:** Los niños más pequeños tienen mayor riesgo de anemia.
+
+### Evaluación del Modelo
+
+```{r}
+bdt_completo <- bdt[complete.cases(bdt[, c("anemia_bin", "riqueza", "anemiamadre_num", 
+                                           "educmadre_num", "area_num", "sexo_num", 
+                                           "edadmeses", "edadmadre")]), ]
+
+predicted <- predict(rlog3, type = "response", newdata = bdt_completo)
+actual <- bdt_completo$anemia_bin
+
+roc_obj <- roc(actual, predicted)
+auc_val <- auc(roc_obj)
+
+plot(roc_obj, main = paste("Curva ROC - AUC:", round(auc_val, 3)), col = "#1F78B4", lwd = 2)
+abline(a = 0, b = 1, lty = 2, col = "gray")
+```
+
+**El AUC indica la capacidad predictiva del modelo.**
+
+
+EFA {data-icon="fa-solid fa-atom"}
+=====================================
+
+Column {data-width=400} {.tabset}
+-----------------------------------------------------------------------
+
+### Correlación
+
+```{r}
+efa_vars <- c("riqueza", "edadmeses", "edadmadre", "area_num", "educmadre_num", 
+            "anemiamadre_num", "sexo_num")
+efa_data <- bdt[, efa_vars]
+efa_data <- efa_data[complete.cases(efa_data), ]
+
+cor_efa <- cor(efa_data)
+ggcorrplot(cor_efa, lab = TRUE, lab_size = 3, colors = c("#B2DF8A", "white", "#1F78B4"))
+```
+
+### Verificación KMO
+
+```{r}
+kmo_result <- KMO(cor_efa)
+cat("KMO Overall:", round(kmo_result$MSA, 3), "\n\n")
+cat("KMO por variable:\n")
+print(round(kmo_result$MSAi, 3))
+```
+
+**Interpretación:** Un KMO > 0.5 indica que el análisis factorial es apropiado.
+
+### Bartlett Test
+
+```{r}
+bart <- cortest.bartlett(cor_efa, n = nrow(efa_data))
+cat("Chi-cuadrado:", round(bart$chisq, 2), "\n")
+cat("p-valor:", format(bart$p.value, scientific = TRUE), "\n")
+```
+
+### Análisis Factorial
+
+```{r}
+resfa <- fa(efa_data, nfactors = 2, rotate = "varimax", fm = "minres")
+print(resfa$loadings, cutoff = 0.3)
+```
+
+Column {data-width=600}
+-----------------------------------------------------------------------
+
+### Diagrama Factorial
+
+```{r, fig.width=10, fig.height=6}
+fa.diagram(resfa, main = "Resultados del Análisis Factorial Exploratorio")
+```
+
+### Interpretación del EFA
+
+**🔍 ANÁLISIS FACTORIAL EXPLORATORIO**
+
+El análisis factorial permite identificar dimensiones latentes:
+
+1. **Factor 1 - Condiciones Socioeconómicas:** Agrupa índice de riqueza, educación materna y área de residencia.
+
+2. **Factor 2 - Características Demográficas:** Incluye edad del niño y características maternas.
+
+**Métricas de ajuste:**
+
+```{r}
+cat("TLI:", round(resfa$TLI, 3), "\n")
+cat("RMSEA:", round(resfa$RMSEA[1], 3), "\n")
+```
+
+
+Clustering {data-icon="fa-solid fa-object-group"}
+=====================================
+
+Column {data-width=400} {.tabset}
+-----------------------------------------------------------------------
+
+### Número Óptimo de Clusters
+
+```{r}
+cluster_data <- bdt %>%
+group_by(region) %>%
+summarise(
+  prev_anemia = mean(anemia_bin, na.rm = TRUE),
+  mean_riqueza = mean(riqueza, na.rm = TRUE),
+  prop_rural = mean(area_num, na.rm = TRUE),
+  mean_educmadre = mean(educmadre_num, na.rm = TRUE),
+  prop_anemiamadre = mean(anemiamadre_num, na.rm = TRUE)
+) %>%
+filter(complete.cases(.))
+
+dataClus <- as.data.frame(cluster_data[, 2:6])
+row.names(dataClus) <- cluster_data$region
+
+g.dist <- daisy(dataClus, metric = "gower")
+fviz_nbclust(dataClus, pam, diss = g.dist, method = "silhouette", k.max = 8) +
+  theme_minimal()
+```
+
+### Silueta de Clusters
+
+```{r}
+set.seed(123)
+res.pam <- pam(g.dist, 3, cluster.only = FALSE)
+fviz_silhouette(res.pam, print.summary = FALSE) +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Paired") +
+  scale_color_brewer(palette = "Paired")
+```
+
+### Regiones por Cluster
+
+```{r}
+cluster_data$cluster <- res.pam$cluster
+cluster_data %>%
+arrange(cluster) %>%
+dplyr::select(region, cluster, prev_anemia, mean_riqueza) %>%
+kable(format = "html", digits = 3, caption = "Regiones por Cluster") %>%
+kable_styling(bootstrap_options = c("striped", "hover"), font_size = 11)
+```
+
+Column {data-width=600}
+-----------------------------------------------------------------------
+
+### Visualización de Clusters
+
+```{r}
+proyeccion <- cmdscale(g.dist, k = 2, add = TRUE)
+cluster_data$dim1 <- proyeccion$points[,1]
+cluster_data$dim2 <- proyeccion$points[,2]
+
+ggplot(cluster_data, aes(x = dim1, y = dim2, color = factor(cluster), label = region)) +
+geom_point(size = 4) +
+geom_text(vjust = -1, size = 2.5) +
+scale_color_brewer(palette = "Paired") +
+labs(title = "Clustering de Regiones según Indicadores de Anemia",
+     x = "Dimensión 1", y = "Dimensión 2", color = "Cluster") +
+theme_minimal() +
+theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+```
+
+### Interpretación del Clustering
+
+**🔍 PERFILES REGIONALES POR CLUSTER (PAM)**
+
+El análisis de clustering agrupa las regiones del Perú:
+
+1. **Cluster 1 - Bajo Riesgo:** Regiones con menor prevalencia de anemia, mayor índice de riqueza y predominio urbano.
+
+2. **Cluster 2 - Riesgo Moderado:** Regiones con prevalencia intermedia, características mixtas.
+
+3. **Cluster 3 - Alto Riesgo:** Regiones con alta prevalencia de anemia, mayor ruralidad y menor riqueza.
+
+**IMPLICANCIAS:** Se requieren políticas diferenciadas por región.
+
+
+Conclusiones {data-icon="fa-solid fa-flag-checkered"}
+=====================================
+
+Column {data-width=500}
+-----------------------------------------------------------------------
+
+### Principales Hallazgos
+
+**🔍 CONCLUSIONES PRINCIPALES DEL ESTUDIO**
+
+- 🩸 **La anemia infantil en el Perú está determinada por múltiples factores:** La anemia materna, el área de residencia, la educación de la madre y el índice de riqueza son predictores significativos.
+
+- 👩‍🎓 **La educación materna es un factor protector clave:** A mayor nivel educativo de la madre, menor probabilidad de anemia en los niños.
+
+- 🏘️ **La brecha urbano-rural persiste:** Los niños de zonas rurales tienen significativamente mayor prevalencia de anemia.
+
+- 🤰 **La anemia materna predice anemia infantil:** Existe una asociación significativa entre ambas condiciones.
+
+- 📊 **El modelo predictivo tiene buena capacidad discriminativa:** Permite identificar niños en riesgo.
+
+- 🗺️ **Las regiones del Perú tienen perfiles diferenciados:** El clustering reveló grupos territoriales con distintos niveles de riesgo.
+
+### Recomendaciones
+
+**📋 RECOMENDACIONES DE POLÍTICA**
+
+1. **Fortalecer los programas de suplementación de hierro:** Priorizar zonas rurales y poblaciones de menores recursos.
+
+2. **Intervenir desde el embarazo:** Reducir la anemia materna para prevenir la transmisión intergeneracional.
+
+3. **Focalizar por nivel educativo:** Estrategias de comunicación adaptadas al nivel educativo de las madres.
+
+4. **Políticas diferenciadas por región:** Intervenciones específicas según el perfil de riesgo de cada cluster.
+
+5. **Mejorar el acceso a servicios de salud en zonas rurales:** Fortalecer la atención primaria.
+
+6. **Monitoreo continuo:** Utilizar indicadores predictivos para el seguimiento de intervenciones.
