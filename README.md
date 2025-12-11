@@ -1,5 +1,11 @@
 # Anemia-infantil-peru-2022
 
+# Anemia Infantil en el Perú - ENDES 2022
+
+📊 **[Ver Dashboard](https://cmympucp.github.io/Anemia-infantil-peru-2022/)**
+
+## Diccionario anterior de Variables
+
 ## Tabla referente 1: HV025 - Area de residencia: 1 Urbano, 2 Rural; HV026 - Lugar de residencia: 0 Capital, gran ciudad,1 Pequeña ciudad, 2 Pueblo, 3 Campo;  HV040 - Altitud del conglomerado en metros. 
 
 ## Tabla referente 2: HC1 - Edad del niño/a expresada en meses; HC27 - Sexo del niño: 1 Hombre, 2 Mujer; HC53: Nivel de hemoglobina (g/dl - 1 decimal)
